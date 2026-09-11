@@ -1,13 +1,6 @@
 // MV3 service worker.
 // Captures the Azure Portal Bearer token when the portal calls management.azure.com.
-// Also records the remote IP used by HTTPer extension fetches.
-//
-// Differences from MV2:
-//  - No more "webRequestBlocking" (MV3 forbids it) -> the listener runs in observe mode,
-//    which is all that is needed to read the header.
-//  - The service worker can be killed at any time, so the token is NOT kept in a global
-//    variable, and it is no longer stuffed into the badge text. It lives in
-//    chrome.storage.session (browser-session only, never written to disk).
+// Also records connection and response metadata used by HTTPer extension fetches.
 
 const TOKEN_KEY = "azureAuthToken";
 const TOKEN_TS_KEY = "azureAuthTokenAt";
@@ -20,14 +13,13 @@ const EXTENSION_ORIGIN = chrome.runtime.getURL("").replace(/\/$/, "");
 
 async function saveToken(value) {
   const stored = await chrome.storage.session.get(TOKEN_KEY);
-  if (stored[TOKEN_KEY] === value) return; // skip the write when the token has not changed
+  if (stored[TOKEN_KEY] === value) return;
 
   await chrome.storage.session.set({
     [TOKEN_KEY]: value,
     [TOKEN_TS_KEY]: Date.now()
   });
 
-  // The badge is only a "token captured" indicator; it does not hold the token.
   chrome.action.setBadgeBackgroundColor({ color: "#34d399" });
   chrome.action.setBadgeText({ text: "ok" });
 }
@@ -39,7 +31,6 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
       if (header.name.toLowerCase() !== "authorization") continue;
       const value = header.value || "";
       if (!value.startsWith("Bearer ")) break;
-      // The listener must stay synchronous; let the storage write run in the background.
       saveToken(value);
       break;
     }
@@ -63,12 +54,28 @@ function normalizeUrl(url) {
 }
 
 function isLikelyExtensionRequest(details) {
-  // Extension fetches normally have our extension origin as initiator. For some redirect/manual-fetch
-  // paths Chromium may omit initiator, but those requests are still detached from a normal tab.
   if (details.initiator === EXTENSION_ORIGIN) return true;
   if (!details.initiator && details.tabId === -1) return true;
   if (details.initiator === "null" && details.tabId === -1) return true;
   return false;
+}
+
+function serializeResponseHeaders(headers, redirectUrl) {
+  const out = [];
+  for (const header of headers || []) {
+    const name = String(header?.name || "").trim();
+    const value = header?.value ?? (Array.isArray(header?.binaryValue) ? String.fromCharCode(...header.binaryValue) : "");
+    if (!name) continue;
+    out.push({ name, value: String(value || "") });
+  }
+
+  // Chromium internal redirects (for example HSTS/HTTPS upgrades) may expose redirectUrl
+  // without a normal Location header. Surface it as Location so HTTPer can still show the target.
+  if (redirectUrl && !out.some(h => h.name.toLowerCase() === "location")) {
+    out.push({ name: "location", value: String(redirectUrl) });
+  }
+
+  return out;
 }
 
 async function rememberRemoteConnection(details, eventName) {
@@ -89,6 +96,7 @@ async function rememberRemoteConnection(details, eventName) {
     statusCode: Number(details.statusCode || 0),
     statusLine: details.statusLine || "",
     redirectUrl: details.redirectUrl || "",
+    responseHeaders: serializeResponseHeaders(details.responseHeaders, details.redirectUrl),
     eventName: eventName || "",
     at: now
   });
@@ -98,17 +106,18 @@ async function rememberRemoteConnection(details, eventName) {
 
 chrome.webRequest.onResponseStarted.addListener(
   details => { rememberRemoteConnection(details, "responseStarted"); },
-  { urls: ["http://*/*", "https://*/*"] }
+  { urls: ["http://*/*", "https://*/*"] },
+  ["responseHeaders"]
 );
 
-// For redirect:'manual', Fetch exposes an opaqueredirect response (status 0), but webRequest
-// still sees the actual 30x response. Capture it here as well as onResponseStarted.
+// For redirect:'manual', Fetch exposes an opaqueredirect response (status 0), while webRequest
+// still sees the actual 30x response and its Location header.
 chrome.webRequest.onBeforeRedirect.addListener(
   details => { rememberRemoteConnection(details, "beforeRedirect"); },
-  { urls: ["http://*/*", "https://*/*"] }
+  { urls: ["http://*/*", "https://*/*"] },
+  ["responseHeaders"]
 );
 
-// popup.js and HTTPer ask the service worker for session-only data here.
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg) return false;
 
@@ -119,7 +128,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const expired = !at || Date.now() - at > TOKEN_MAX_AGE_MS;
       sendResponse({ token, at, expired: Boolean(token) && expired });
     });
-    return true; // keep the message channel open for the async sendResponse
+    return true;
   }
 
   if (msg.type === "GET_REMOTE_INFO") {
@@ -139,7 +148,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   return false;
 });
 
-// Session data is gone after a browser restart -> clear the badge so it is not misleading.
 chrome.runtime.onStartup.addListener(() => {
   chrome.action.setBadgeText({ text: "" });
 });
