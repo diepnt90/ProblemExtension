@@ -12,7 +12,7 @@ let lastBody='',lastContentType='',lastPreviewBase='',hostCustom=false,autoHost=
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function getHeaderRow(name){const wanted=String(name||'').trim().toLowerCase();return [...headersBox.querySelectorAll('.header-row')].find(r=>r.querySelector('.hname')?.value.trim().toLowerCase()===wanted)||null}
 function getHostRow(){return getHeaderRow('host')}
-function hostFromUrl(value){try{let v=String(value||'').trim();if(!v)return '';if(!/^https?:\/\//i.test(v))v='https://'+v;return new URL(v).host}catch{return ''}}
+function hostFromUrl(value){try{let v=String(value||'').trim();if(!v)return '';if(!/^https?:\/\//i.test(v))v='http://'+v;return new URL(v).host}catch{return ''}}
 function syncHostFromUrl(){if(hostCustom)return;const row=getHostRow();if(!row)return;autoHost=hostFromUrl(urlInput.value);row.querySelector('.hvalue').value=autoHost}
 function addHeaderRow(name='',value=''){const row=document.createElement('div');row.className='header-row';row.innerHTML=`<input class="input hname" placeholder="Header name" value="${esc(name)}"><input class="input hvalue" placeholder="Header value" value="${esc(value)}"><button class="btn btn-danger">Remove</button>`;const n=row.querySelector('.hname'),v=row.querySelector('.hvalue');row.querySelector('button').onclick=()=>row.remove();if(String(name).toLowerCase()==='host'){v.addEventListener('input',()=>{hostCustom=v.value.trim()!==autoHost});n.addEventListener('input',()=>{if(n.value.trim().toLowerCase()!=='host')hostCustom=true})}headersBox.appendChild(row);return row}
 function clearHeaders(){headersBox.innerHTML='';hostCustom=false;autoHost=''}
@@ -68,7 +68,7 @@ window.addEventListener('beforeunload',clearPreviewUrl);
 
 sendBtn.onclick=async()=>{
   message.textContent='';responsePanel.classList.add('hidden');showBody(false);showPreview(false);showNetwork(false);
-  let raw=urlInput.value.trim();if(!raw){message.textContent='Enter a URL.';return}if(!/^https?:\/\//i.test(raw))raw='https://'+raw;
+  let raw=urlInput.value.trim();if(!raw){message.textContent='Enter a URL.';return}if(!/^https?:\/\//i.test(raw))raw='http://'+raw;
   let target;try{target=new URL(raw)}catch{message.textContent='Invalid URL.';return}
   syncHostFromUrl();
   const init={method:method.value,headers:fetchHeaders(),cache:'no-store',redirect:'follow'};
