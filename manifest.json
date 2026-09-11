@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Optimizely IM tool",
+  "version": "6.9",
+  "permissions": [
+    "webRequest",
+    "storage",
+    "tabs",
+    "clipboardWrite"
+  ],
+  "host_permissions": [
+    "https://management.azure.com/*",
+    "https://portal.azure.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "logo.png",
+      "48": "logo.png",
+      "128": "logo.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://portal.azure.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["popup.html", "icon.png", "logo.png"],
+      "matches": ["https://portal.azure.com/*"]
+    }
+  ]
+}
