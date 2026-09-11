@@ -246,6 +246,45 @@
       box-shadow: 0 3px 10px rgba(248, 113, 113, 0.2);
     }
 
+    .tool-shortcuts {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+      padding: 0 16px 14px;
+    }
+
+    .tool-shortcut {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 10px 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text-dim);
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all .15s ease;
+    }
+
+    .tool-shortcut:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: var(--surface-2);
+    }
+
+    .tool-shortcut svg {
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      flex-shrink: 0;
+    }
+
     .footer {
       padding: 8px 16px;
       border-top: 1px solid var(--border);
@@ -370,6 +409,17 @@
       </button>
 
     </div>
+  </div>
+
+  <div class="tool-shortcuts">
+    <button class="tool-shortcut" id="open-httper">
+      <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/><path d="M18 15l3 3-3 3"/></svg>
+      HTTPer
+    </button>
+    <button class="tool-shortcut" id="open-csv-log">
+      <svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
+      CSV/Json Log
+    </button>
   </div>
 
   <div class="footer">
