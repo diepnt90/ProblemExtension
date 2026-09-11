@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Optimizely IM tool",
-  "version": "6.9",
+  "version": "6.10",
   "permissions": [
     "webRequest",
     "storage",
@@ -10,7 +10,9 @@
   ],
   "host_permissions": [
     "https://management.azure.com/*",
-    "https://portal.azure.com/*"
+    "https://portal.azure.com/*",
+    "http://*/*",
+    "https://*/*"
   ],
   "action": {
     "default_popup": "popup.html",
