@@ -9,7 +9,6 @@ const defaults=[
 const method=$('method'),urlInput=$('url'),headersBox=$('headers'),requestBody=$('requestBody'),bodyWrap=$('bodyWrap'),requestPanel=$('requestPanel'),sendBtn=$('send'),message=$('message'),responsePanel=$('responsePanel'),statusbar=$('statusbar'),responseHeaders=$('responseHeaders'),bodyContent=$('bodyContent'),responseBodyEl=$('responseBody'),toggleBody=$('toggleBody'),togglePreview=$('togglePreview'),previewContent=$('previewContent'),previewFrame=$('previewFrame'),reuseResponseHeaders=$('reuseResponseHeaders'),toggleNetwork=$('toggleNetwork'),networkContent=$('networkContent'),networkList=$('networkList');
 let lastBody='',lastContentType='',lastPreviewBase='',hostCustom=false,autoHost='',lastResponseHeaders=[],lastSubrequests=[],previewUrl=null;
 
-function tick(){const n=new Date();$('clockTime').textContent=n.toLocaleTimeString('en-GB',{hour12:false});$('clockDate').textContent=n.toLocaleDateString('en-US',{weekday:'long',day:'2-digit',month:'short',year:'numeric'})}setInterval(tick,1000);tick();
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function getHeaderRow(name){const wanted=String(name||'').trim().toLowerCase();return [...headersBox.querySelectorAll('.header-row')].find(r=>r.querySelector('.hname')?.value.trim().toLowerCase()===wanted)||null}
 function getHostRow(){return getHeaderRow('host')}
