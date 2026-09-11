@@ -9,7 +9,7 @@ const defaults=[
 const method=$('method'),urlInput=$('url'),headersBox=$('headers'),requestBody=$('requestBody'),bodyWrap=$('bodyWrap'),requestPanel=$('requestPanel'),sendBtn=$('send'),message=$('message'),responsePanel=$('responsePanel'),statusbar=$('statusbar'),responseHeaders=$('responseHeaders'),bodyContent=$('bodyContent'),responseBodyEl=$('responseBody'),toggleBody=$('toggleBody'),togglePreview=$('togglePreview'),previewContent=$('previewContent'),previewFrame=$('previewFrame'),reuseResponseHeaders=$('reuseResponseHeaders'),toggleNetwork=$('toggleNetwork'),networkContent=$('networkContent'),networkList=$('networkList');
 let lastBody='',lastContentType='',lastPreviewBase='',hostCustom=false,autoHost='',lastResponseHeaders=[],lastSubrequests=[],previewUrl=null;
 
-function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#39;'}[c]))}
 function getHeaderRow(name){const wanted=String(name||'').trim().toLowerCase();return [...headersBox.querySelectorAll('.header-row')].find(r=>r.querySelector('.hname')?.value.trim().toLowerCase()===wanted)||null}
 function getHostRow(){return getHeaderRow('host')}
 function hostFromUrl(value){try{let v=String(value||'').trim();if(!v)return '';if(!/^https?:\/\//i.test(v))v='http://'+v;return new URL(v).host}catch{return ''}}
@@ -29,68 +29,11 @@ function renderResponseHeaders(items){responseHeaders.innerHTML='';if(!items.len
 function extractSubrequests(html,base){const out=[],seen=new Set();if(!/html/i.test(lastContentType)||!html)return out;let doc;try{doc=new DOMParser().parseFromString(html,'text/html')}catch{return out}const defs=[['script[src]','script','src'],['link[href]','link','href'],['img[src]','image','src'],['iframe[src]','iframe','src'],['source[src]','media','src']];for(const [sel,type,attr] of defs){doc.querySelectorAll(sel).forEach(el=>{const raw=el.getAttribute(attr);if(!raw)return;try{const u=new URL(raw,base).href;if(/^https?:/i.test(u)&&!seen.has(u)){seen.add(u);out.push({type,url:u})}}catch{}})}return out.slice(0,150)}
 function renderNetwork(){networkList.innerHTML='';if(!lastSubrequests.length){networkList.innerHTML='<div class="network-empty">No subrequests found in the response body.</div>';return}for(const item of lastSubrequests){const row=document.createElement('div');row.className='network-item';row.innerHTML=`<div class="network-type">${esc(item.type)}</div><div class="network-url" title="${esc(item.url)}">${esc(item.url)}</div><button class="btn network-send">Open in HTTPer</button>`;row.querySelector('button').onclick=()=>{urlInput.value=item.url;hostCustom=false;syncHostFromUrl();window.scrollTo({top:0,behavior:'smooth'})};networkList.appendChild(row)}}
 function showBody(on){bodyContent.classList.toggle('hidden',!on);toggleBody.textContent=on?'Hide body':'Show body'}
-function buildPreviewHtml(){
-  let html=lastBody||'';
-  if(!html)return '<!doctype html><html><body></body></html>';
-  html=html.replace(/<meta[^>]+http-equiv\s*=\s*["']?content-security-policy["']?[^>]*>/gi,'');
-  html=html.replace(/<base\b[^>]*>/gi,'');
-  const base=lastPreviewBase?`<base href="${String(lastPreviewBase).replace(/&/g,'&amp;').replace(/"/g,'&quot;')}">`:'';
-  if(/<head[\s>]/i.test(html))return html.replace(/<head([^>]*)>/i,`<head$1>${base}`);
-  if(/<html[\s>]/i.test(html))return html.replace(/<html([^>]*)>/i,`<html$1><head>${base}</head>`);
-  return `<!doctype html><html><head>${base}</head><body>${html}</body></html>`;
-}
+function buildPreviewHtml(){let html=lastBody||'';if(!html)return '<!doctype html><html><body></body></html>';html=html.replace(/<meta[^>]+http-equiv\s*=\s*["']?content-security-policy["']?[^>]*>/gi,'');html=html.replace(/<base\b[^>]*>/gi,'');const base=lastPreviewBase?`<base href="${String(lastPreviewBase).replace(/&/g,'&amp;').replace(/"/g,'&quot;')}">`:'';if(/<head[\s>]/i.test(html))return html.replace(/<head([^>]*)>/i,`<head$1>${base}`);if(/<html[\s>]/i.test(html))return html.replace(/<html([^>]*)>/i,`<html$1><head>${base}</head>`);return `<!doctype html><html><head>${base}</head><body>${html}</body></html>`}
 function clearPreviewUrl(){if(previewUrl){URL.revokeObjectURL(previewUrl);previewUrl=null}}
-function showPreview(on){
-  previewContent.classList.toggle('hidden',!on);
-  togglePreview.textContent=on?'Hide preview':'Preview body';
-  clearPreviewUrl();
-  if(on){
-    const blob=new Blob([buildPreviewHtml()],{type:'text/html'});
-    previewUrl=URL.createObjectURL(blob);
-    previewFrame.removeAttribute('srcdoc');
-    previewFrame.src=previewUrl;
-  }else{
-    previewFrame.removeAttribute('src');
-    previewFrame.src='about:blank';
-  }
-}
+function showPreview(on){previewContent.classList.toggle('hidden',!on);togglePreview.textContent=on?'Hide preview':'Preview body';clearPreviewUrl();if(on){const blob=new Blob([buildPreviewHtml()],{type:'text/html'});previewUrl=URL.createObjectURL(blob);previewFrame.removeAttribute('srcdoc');previewFrame.src=previewUrl}else{previewFrame.removeAttribute('src');previewFrame.src='about:blank'}}
 function showNetwork(on){networkContent.classList.toggle('hidden',!on);toggleNetwork.textContent=on?'Hide Network':'Network View';if(on)renderNetwork()}
 
-clearHeaders();defaults.forEach(([n,v])=>addHeaderRow(n,v));
-urlInput.addEventListener('input',syncHostFromUrl);syncHostFromUrl();
-method.onchange=updateBody;updateBody();
-$('addHeaderBtn').onclick=()=>addHeaderRow();
+clearHeaders();defaults.forEach(([n,v])=>addHeaderRow(n,v));urlInput.addEventListener('input',syncHostFromUrl);syncHostFromUrl();method.onchange=updateBody;updateBody();$('addHeaderBtn').onclick=()=>addHeaderRow();toggleBody.onclick=()=>showBody(bodyContent.classList.contains('hidden'));togglePreview.onclick=()=>showPreview(previewContent.classList.contains('hidden'));toggleNetwork.onclick=()=>showNetwork(networkContent.classList.contains('hidden'));window.addEventListener('beforeunload',clearPreviewUrl);
 
-toggleBody.onclick=()=>showBody(bodyContent.classList.contains('hidden'));
-togglePreview.onclick=()=>showPreview(previewContent.classList.contains('hidden'));
-toggleNetwork.onclick=()=>showNetwork(networkContent.classList.contains('hidden'));
-window.addEventListener('beforeunload',clearPreviewUrl);
-
-sendBtn.onclick=async()=>{
-  message.textContent='';responsePanel.classList.add('hidden');showBody(false);showPreview(false);showNetwork(false);
-  let raw=urlInput.value.trim();if(!raw){message.textContent='Enter a URL.';return}if(!/^https?:\/\//i.test(raw))raw='http://'+raw;
-  let target;try{target=new URL(raw)}catch{message.textContent='Invalid URL.';return}
-  syncHostFromUrl();
-  const init={method:method.value,headers:fetchHeaders(),cache:'no-store',redirect:'follow'};
-  if(['POST','PUT','PATCH'].includes(method.value))init.body=requestBody.value;
-  sendBtn.disabled=true;sendBtn.textContent='Sending...';requestPanel.classList.add('loading');
-  try{
-    const started=performance.now();
-    const r=await fetch(target.href,init);
-    const elapsed=Math.round(performance.now()-started);
-    const text=method.value==='HEAD'?'':await r.text();
-    lastBody=text;lastContentType=r.headers.get('content-type')||'';lastPreviewBase=r.url||target.href;
-    lastResponseHeaders=[...r.headers.entries()].map(([name,value])=>({name,value}));
-    reuseHeadersFromResponse(lastResponseHeaders);
-    renderResponseHeaders(lastResponseHeaders);
-    statusbar.innerHTML=`<span class="pill ${r.ok?'ok':'warn'}">HTTP ${r.status} ${esc(r.statusText)}</span><span class="pill">${esc(method.value)}</span><span class="pill">${esc(new URL(r.url||target.href).host)}</span><span class="pill">${elapsed} ms</span>`;
-    responseBodyEl.textContent=text;
-    lastSubrequests=extractSubrequests(text,lastPreviewBase);
-    const previewable=/text\/html|application\/xhtml\+xml/i.test(lastContentType);
-    togglePreview.classList.toggle('hidden',!previewable);
-    toggleNetwork.classList.toggle('hidden',!previewable);
-    responsePanel.classList.remove('hidden');
-    if(!text)toggleBody.classList.add('hidden');else toggleBody.classList.remove('hidden');
-  }catch(e){message.textContent='Request failed: '+e.message+' Make sure the extension has access to this site.'}
-  finally{sendBtn.disabled=false;sendBtn.textContent='Send request';requestPanel.classList.remove('loading')}
-};
+sendBtn.onclick=async()=>{message.textContent='';responsePanel.classList.add('hidden');showBody(false);showPreview(false);showNetwork(false);let raw=urlInput.value.trim();if(!raw){message.textContent='Enter a URL.';return}if(!/^https?:\/\//i.test(raw))raw='http://'+raw;let target;try{target=new URL(raw)}catch{message.textContent='Invalid URL.';return}syncHostFromUrl();const init={method:method.value,headers:fetchHeaders(),cache:'no-store',redirect:'manual'};if(['POST','PUT','PATCH'].includes(method.value))init.body=requestBody.value;sendBtn.disabled=true;sendBtn.textContent='Sending...';requestPanel.classList.add('loading');try{const started=performance.now();const r=await fetch(target.href,init);const elapsed=Math.round(performance.now()-started);const text=method.value==='HEAD'?'':await r.text();lastBody=text;lastContentType=r.headers.get('content-type')||'';lastPreviewBase=r.url||target.href;lastResponseHeaders=[...r.headers.entries()].map(([name,value])=>({name,value}));reuseHeadersFromResponse(lastResponseHeaders);renderResponseHeaders(lastResponseHeaders);statusbar.innerHTML=`<span class="pill ${r.ok?'ok':'warn'}">HTTP ${r.status} ${esc(r.statusText)}</span><span class="pill">${esc(method.value)}</span><span class="pill">${esc(new URL(r.url||target.href).host)}</span><span class="pill">${elapsed} ms</span>`;responseBodyEl.textContent=text;lastSubrequests=extractSubrequests(text,lastPreviewBase);const previewable=/text\/html|application\/xhtml\+xml/i.test(lastContentType);togglePreview.classList.toggle('hidden',!previewable);toggleNetwork.classList.toggle('hidden',!previewable);responsePanel.classList.remove('hidden');if(!text)toggleBody.classList.add('hidden');else toggleBody.classList.remove('hidden')}catch(e){message.textContent='Request failed: '+e.message+' Make sure the extension has access to this site.'}finally{sendBtn.disabled=false;sendBtn.textContent='Send request';requestPanel.classList.remove('loading')}};
