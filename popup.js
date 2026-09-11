@@ -68,7 +68,6 @@ function parseAzureResourceFromUrl(urlStr) {
 }
 
 // ===== Helper: force consoleUrl onto the slot's own SCM host =====
-// A slot uses {site}-{slot}.scm.azurewebsites.net, in case the API returns the production host.
 function slotAwareConsoleUrl(consoleUrl, webapp, slot) {
   if (!consoleUrl || !slot) return consoleUrl;
   try {
@@ -82,8 +81,6 @@ function slotAwareConsoleUrl(consoleUrl, webapp, slot) {
   return consoleUrl;
 }
 
-// ===== Helper: show a message inside the panel =====
-// Not using alert(): Chrome blocks alert() in cross-origin iframes (the panel is embedded in Azure Portal).
 function notify(message, kind) {
   const el = document.getElementById("notice");
   if (!el) return;
@@ -92,10 +89,6 @@ function notify(message, kind) {
   el.hidden = false;
 }
 
-// ===== Helper: ask the service worker for the Bearer token (MV3) =====
-// MV2 stuffed the token into the badge text and read it back with chrome.action.getBadgeText.
-// The MV3 service worker sleeps and wakes constantly, so the token lives in chrome.storage.session:
-// ask for it over a message, and read storage directly if the worker has not woken up yet.
 function getAuthToken() {
   return new Promise((resolve) => {
     let settled = false;
@@ -114,6 +107,21 @@ function getAuthToken() {
     } catch (_) {
       done({ token: "", at: 0, expired: false });
     }
+  });
+}
+
+// ===== Standalone tool shortcuts =====
+const openHttper = document.getElementById("open-httper");
+if (openHttper) {
+  openHttper.addEventListener("click", function () {
+    chrome.tabs.create({ url: chrome.runtime.getURL("httper.html") });
+  });
+}
+
+const openCsvLog = document.getElementById("open-csv-log");
+if (openCsvLog) {
+  openCsvLog.addEventListener("click", function () {
+    chrome.tabs.create({ url: chrome.runtime.getURL("csv-log.html") });
   });
 }
 
@@ -141,7 +149,6 @@ chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
     const authElement = document.getElementById("authorization-value");
     if (authElement) authElement.textContent = "Auth: ok";
 
-    // Update the UI
     const subidElement = document.getElementById("subid");
     subidElement.textContent = `Subscription ID: ${subid}`;
     const appplanElement = document.getElementById("appplan");
@@ -149,7 +156,6 @@ chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
     const webappElement = document.getElementById("webapp");
     webappElement.textContent = slot ? `Web App: ${webapp} (slot: ${slot})` : `Web App: ${webapp}`;
 
-    // Resource path of the site: point at the slot when there is one, otherwise production
     const sitePath = `/subscriptions/${subid}/resourceGroups/${appplan}/providers/Microsoft.Web/sites/${webapp}`
       + (slot ? `/slots/${slot}` : "");
 
@@ -163,7 +169,6 @@ chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
     const aiQuery = document.getElementById("ai-query");
     const threadPool = document.getElementById("threadpool-script");
 
-    // Call the API to list the instances
     fetch(`https://management.azure.com${sitePath}/instances?api-version=2020-12-01`, {
       headers: {
         'Authorization': result,
@@ -184,7 +189,6 @@ chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
         dropdownElement.appendChild(option);
       });
 
-      // ===== Button event listeners =====
       replaceButton.addEventListener("click", function () {
         const selectedMachineName = dropdownElement.value;
         if (selectedMachineName) {
@@ -267,7 +271,6 @@ top-nested 10 of name by sum(itemCount)
         chrome.tabs.create({ url: resourceUrl });
       });
 
-      // ---- takeTrace ----
       takeTrace.addEventListener("click", function () {
         const selectedMachineName = dropdownElement.value;
         if (selectedMachineName) {
@@ -290,7 +293,6 @@ top-nested 10 of name by sum(itemCount)
         }
       });
 
-      // ---- takeDump ----
       takeDump.addEventListener("click", function () {
         const selectedMachineName = dropdownElement.value;
         if (selectedMachineName) {
@@ -313,7 +315,6 @@ top-nested 10 of name by sum(itemCount)
         }
       });
 
-      // ---- masterScript ----
       masterScript.addEventListener("click", function () {
         const selectedMachineName = dropdownElement.value;
         if (selectedMachineName) {
@@ -336,7 +337,6 @@ top-nested 10 of name by sum(itemCount)
         }
       });
 
-      // ---- threadPool ----
       threadPool.addEventListener("click", function () {
         const selectedMachineName = dropdownElement.value;
         if (selectedMachineName) {
@@ -359,7 +359,6 @@ top-nested 10 of name by sum(itemCount)
         }
       });
 
-      // ---- logFiles (left as-is; it already works) ----
       logFiles.addEventListener("click", function () {
         const selectedMachineName = dropdownElement.value;
         if (selectedMachineName) {
