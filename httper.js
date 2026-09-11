@@ -1,1 +1,72 @@
-const $=id=>document.getElementById(id);const method=$('method'),urlInput=$('url'),headersBox=$('headers'),bodyWrap=$('bodyWrap'),requestBody=$('requestBody'),message=$('message'),responsePanel=$('responsePanel'),status=$('status'),responseHeaders=$('responseHeaders'),responseBody=$('responseBody');function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}function addHeader(name='',value=''){const row=document.createElement('div');row.className='header-row';row.innerHTML=`<input class="input hname" placeholder="Header name" value="${esc(name)}"><input class="input hvalue" placeholder="Header value" value="${esc(value)}"><button class="btn">Remove</button>`;row.querySelector('button').onclick=()=>row.remove();headersBox.appendChild(row)}function collectHeaders(){const out={};headersBox.querySelectorAll('.header-row').forEach(r=>{const n=r.querySelector('.hname').value.trim(),v=r.querySelector('.hvalue').value;if(n)out[n]=v});return out}function updateBody(){bodyWrap.classList.toggle('hidden',!['POST','PUT','PATCH'].includes(method.value))}method.onchange=updateBody;updateBody();$('addHeader').onclick=()=>addHeader();[['accept','*/*'],['user-agent','Mozilla/5.0']].forEach(x=>addHeader(...x));$('send').onclick=async()=>{message.textContent='';responsePanel.classList.add('hidden');let raw=urlInput.value.trim();if(!raw)return message.textContent='Enter a URL.';if(!/^https?:\/\//i.test(raw))raw='https://'+raw;let u;try{u=new URL(raw)}catch{return message.textContent='Invalid URL.'}const init={method:method.value,headers:collectHeaders()};if(['POST','PUT','PATCH'].includes(method.value))init.body=requestBody.value;this?.disabled;const btn=$('send');btn.disabled=true;btn.textContent='Sending...';try{const r=await fetch(u.toString(),init);const text=await r.text();status.innerHTML=`<span class="pill">HTTP ${r.status} ${esc(r.statusText)}</span><span class="pill">${esc(method.value)}</span><span class="pill">${esc(u.host)}</span>`;responseHeaders.innerHTML='';[...r.headers.entries()].forEach(([k,v])=>{const row=document.createElement('div');row.className='hrow';row.innerHTML=`<div>${esc(k)}</div><div>${esc(v)}</div>`;responseHeaders.appendChild(row)});responseBody.textContent=text;responsePanel.classList.remove('hidden')}catch(e){message.textContent='Request failed: '+e.message}finally{btn.disabled=false;btn.textContent='Send request'}};
+const $=id=>document.getElementById(id);
+const defaults=[
+  ['host',''],
+  ['accept','text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'],
+  ['accept-encoding','gzip, deflate, br, zstd'],
+  ['accept-language','en-US,en;q=0.9'],
+  ['user-agent','Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36']
+];
+const method=$('method'),urlInput=$('url'),headersBox=$('headers'),requestBody=$('requestBody'),bodyWrap=$('bodyWrap'),requestPanel=$('requestPanel'),sendBtn=$('send'),message=$('message'),responsePanel=$('responsePanel'),statusbar=$('statusbar'),responseHeaders=$('responseHeaders'),bodyContent=$('bodyContent'),responseBodyEl=$('responseBody'),toggleBody=$('toggleBody'),togglePreview=$('togglePreview'),previewContent=$('previewContent'),previewFrame=$('previewFrame'),reuseResponseHeaders=$('reuseResponseHeaders'),toggleNetwork=$('toggleNetwork'),networkContent=$('networkContent'),networkList=$('networkList');
+let lastBody='',lastContentType='',lastPreviewBase='',hostCustom=false,autoHost='',lastResponseHeaders=[],lastSubrequests=[];
+
+function tick(){const n=new Date();$('clockTime').textContent=n.toLocaleTimeString('en-GB',{hour12:false});$('clockDate').textContent=n.toLocaleDateString('en-US',{weekday:'long',day:'2-digit',month:'short',year:'numeric'})}setInterval(tick,1000);tick();
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function getHeaderRow(name){const wanted=String(name||'').trim().toLowerCase();return [...headersBox.querySelectorAll('.header-row')].find(r=>r.querySelector('.hname')?.value.trim().toLowerCase()===wanted)||null}
+function getHostRow(){return getHeaderRow('host')}
+function hostFromUrl(value){try{let v=String(value||'').trim();if(!v)return '';if(!/^https?:\/\//i.test(v))v='https://'+v;return new URL(v).host}catch{return ''}}
+function syncHostFromUrl(){if(hostCustom)return;const row=getHostRow();if(!row)return;autoHost=hostFromUrl(urlInput.value);row.querySelector('.hvalue').value=autoHost}
+function addHeaderRow(name='',value=''){const row=document.createElement('div');row.className='header-row';row.innerHTML=`<input class="input hname" placeholder="Header name" value="${esc(name)}"><input class="input hvalue" placeholder="Header value" value="${esc(value)}"><button class="btn btn-danger">Remove</button>`;const n=row.querySelector('.hname'),v=row.querySelector('.hvalue');row.querySelector('button').onclick=()=>row.remove();if(String(name).toLowerCase()==='host'){v.addEventListener('input',()=>{hostCustom=v.value.trim()!==autoHost});n.addEventListener('input',()=>{if(n.value.trim().toLowerCase()!=='host')hostCustom=true})}headersBox.appendChild(row);return row}
+function clearHeaders(){headersBox.innerHTML='';hostCustom=false;autoHost=''}
+function setRequestHeader(name,value){const row=getHeaderRow(name);if(row){row.querySelector('.hvalue').value=value;return}addHeaderRow(name,value)}
+const blockedReuseHeaders=new Set(['connection','keep-alive','proxy-authenticate','proxy-authorization','te','trailer','transfer-encoding','upgrade','content-length','content-encoding','server','date','via','cf-ray','cf-cache-status','alt-svc','nel','report-to','reporting-endpoints']);
+const browserControlledHeaders=new Set(['host','user-agent','accept-encoding','content-length','connection','origin','referer']);
+function reusableResponseHeaders(headers){const out=[],cookies=[];for(const h of headers||[]){const name=String(h?.name||'').trim(),value=String(h?.value||'').trim(),lower=name.toLowerCase();if(!name||!value||blockedReuseHeaders.has(lower)||lower.startsWith('access-control-')||lower==='host')continue;if(lower==='set-cookie'){for(const part of value.split(/,(?=\s*[^;,=]+=[^;,]+)/)){const pair=part.split(';',1)[0].trim();if(pair)cookies.push(pair)}continue}out.push({name,value})}if(cookies.length)out.push({name:'cookie',value:cookies.join('; ')});return out}
+function reuseHeadersFromResponse(headers){if(!reuseResponseHeaders.checked)return;for(const h of reusableResponseHeaders(headers)){if(h.name.toLowerCase()==='cookie'){const existing=getHeaderRow('cookie'),old=existing?existing.querySelector('.hvalue').value.trim():'';setRequestHeader('cookie',[old,h.value].filter(Boolean).join('; '))}else setRequestHeader(h.name,h.value)}}
+function collectHeaders(){return [...headersBox.querySelectorAll('.header-row')].map(r=>({name:r.querySelector('.hname').value.trim(),value:r.querySelector('.hvalue').value})).filter(x=>x.name)}
+function fetchHeaders(){const h=new Headers();for(const item of collectHeaders()){if(browserControlledHeaders.has(item.name.toLowerCase()))continue;try{h.set(item.name,item.value)}catch{}}return h}
+function defaultHeadersForUrl(target){const host=hostFromUrl(target);return defaults.map(([name,value])=>({name,value:name.toLowerCase()==='host'?host:value}))}
+function updateBody(){bodyWrap.classList.toggle('hidden',!['POST','PUT','PATCH'].includes(method.value))}
+function renderResponseHeaders(items){responseHeaders.innerHTML='';if(!items.length){responseHeaders.innerHTML='<div class="row"><div class="cell">—</div><div class="cell">No response headers</div></div>';return}for(const h of items){const row=document.createElement('div');row.className='row';row.innerHTML=`<div class="cell">${esc(h.name)}</div><div class="cell">${esc(h.value)}</div>`;responseHeaders.appendChild(row)}}
+function extractSubrequests(html,base){const out=[],seen=new Set();if(!/html/i.test(lastContentType)||!html)return out;let doc;try{doc=new DOMParser().parseFromString(html,'text/html')}catch{return out}const defs=[['script[src]','script','src'],['link[href]','link','href'],['img[src]','image','src'],['iframe[src]','iframe','src'],['source[src]','media','src']];for(const [sel,type,attr] of defs){doc.querySelectorAll(sel).forEach(el=>{const raw=el.getAttribute(attr);if(!raw)return;try{const u=new URL(raw,base).href;if(/^https?:/i.test(u)&&!seen.has(u)){seen.add(u);out.push({type,url:u})}}catch{}})}return out.slice(0,150)}
+function renderNetwork(){networkList.innerHTML='';if(!lastSubrequests.length){networkList.innerHTML='<div class="network-empty">No subrequests found in the response body.</div>';return}for(const item of lastSubrequests){const row=document.createElement('div');row.className='network-item';row.innerHTML=`<div class="network-type">${esc(item.type)}</div><div class="network-url" title="${esc(item.url)}">${esc(item.url)}</div><button class="btn network-send">Open in HTTPer</button>`;row.querySelector('button').onclick=()=>{urlInput.value=item.url;hostCustom=false;syncHostFromUrl();window.scrollTo({top:0,behavior:'smooth'})};networkList.appendChild(row)}}
+function showBody(on){bodyContent.classList.toggle('hidden',!on);toggleBody.textContent=on?'Hide body':'Show body'}
+function showPreview(on){previewContent.classList.toggle('hidden',!on);togglePreview.textContent=on?'Hide preview':'Preview body';if(on){const base=lastPreviewBase?`<base href="${esc(lastPreviewBase)}">`:'';previewFrame.srcdoc=/<html[\s>]/i.test(lastBody)?lastBody.replace(/<head([^>]*)>/i,`<head$1>${base}`):`<!doctype html><html><head>${base}</head><body>${lastBody}</body></html>`}else previewFrame.srcdoc=''}
+function showNetwork(on){networkContent.classList.toggle('hidden',!on);toggleNetwork.textContent=on?'Hide Network':'Network View';if(on)renderNetwork()}
+
+clearHeaders();defaults.forEach(([n,v])=>addHeaderRow(n,v));
+urlInput.addEventListener('input',syncHostFromUrl);syncHostFromUrl();
+method.onchange=updateBody;updateBody();
+$('addHeaderBtn').onclick=()=>addHeaderRow();
+
+toggleBody.onclick=()=>showBody(bodyContent.classList.contains('hidden'));
+togglePreview.onclick=()=>showPreview(previewContent.classList.contains('hidden'));
+toggleNetwork.onclick=()=>showNetwork(networkContent.classList.contains('hidden'));
+
+sendBtn.onclick=async()=>{
+  message.textContent='';responsePanel.classList.add('hidden');showBody(false);showPreview(false);showNetwork(false);
+  let raw=urlInput.value.trim();if(!raw){message.textContent='Enter a URL.';return}if(!/^https?:\/\//i.test(raw))raw='https://'+raw;
+  let target;try{target=new URL(raw)}catch{message.textContent='Invalid URL.';return}
+  syncHostFromUrl();
+  const init={method:method.value,headers:fetchHeaders(),cache:'no-store',redirect:'follow'};
+  if(['POST','PUT','PATCH'].includes(method.value))init.body=requestBody.value;
+  sendBtn.disabled=true;sendBtn.textContent='Sending...';requestPanel.classList.add('loading');
+  try{
+    const started=performance.now();
+    const r=await fetch(target.href,init);
+    const elapsed=Math.round(performance.now()-started);
+    const text=method.value==='HEAD'?'':await r.text();
+    lastBody=text;lastContentType=r.headers.get('content-type')||'';lastPreviewBase=r.url||target.href;
+    lastResponseHeaders=[...r.headers.entries()].map(([name,value])=>({name,value}));
+    reuseHeadersFromResponse(lastResponseHeaders);
+    renderResponseHeaders(lastResponseHeaders);
+    statusbar.innerHTML=`<span class="pill ${r.ok?'ok':'warn'}">HTTP ${r.status} ${esc(r.statusText)}</span><span class="pill">${esc(method.value)}</span><span class="pill">${esc(new URL(r.url||target.href).host)}</span><span class="pill">${elapsed} ms</span>`;
+    responseBodyEl.textContent=text;
+    lastSubrequests=extractSubrequests(text,lastPreviewBase);
+    const previewable=/text\/html|application\/xhtml\+xml/i.test(lastContentType);
+    togglePreview.classList.toggle('hidden',!previewable);
+    toggleNetwork.classList.toggle('hidden',!previewable);
+    responsePanel.classList.remove('hidden');
+    if(!text)toggleBody.classList.add('hidden');else toggleBody.classList.remove('hidden');
+  }catch(e){message.textContent='Request failed: '+e.message+' Make sure the extension has access to this site.'}
+  finally{sendBtn.disabled=false;sendBtn.textContent='Send request';requestPanel.classList.remove('loading')}
+};
