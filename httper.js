@@ -7,7 +7,7 @@ const defaults=[
   ['user-agent','Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36']
 ];
 const method=$('method'),urlInput=$('url'),headersBox=$('headers'),requestBody=$('requestBody'),bodyWrap=$('bodyWrap'),requestPanel=$('requestPanel'),sendBtn=$('send'),message=$('message'),responsePanel=$('responsePanel'),statusbar=$('statusbar'),responseHeaders=$('responseHeaders'),bodyContent=$('bodyContent'),responseBodyEl=$('responseBody'),toggleBody=$('toggleBody'),togglePreview=$('togglePreview'),previewContent=$('previewContent'),previewFrame=$('previewFrame'),reuseResponseHeaders=$('reuseResponseHeaders'),toggleNetwork=$('toggleNetwork'),networkContent=$('networkContent'),networkList=$('networkList');
-let lastBody='',lastContentType='',lastPreviewBase='',hostCustom=false,autoHost='',lastResponseHeaders=[],lastSubrequests=[];
+let lastBody='',lastContentType='',lastPreviewBase='',hostCustom=false,autoHost='',lastResponseHeaders=[],lastSubrequests=[],previewUrl=null;
 
 function tick(){const n=new Date();$('clockTime').textContent=n.toLocaleTimeString('en-GB',{hour12:false});$('clockDate').textContent=n.toLocaleDateString('en-US',{weekday:'long',day:'2-digit',month:'short',year:'numeric'})}setInterval(tick,1000);tick();
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
@@ -30,7 +30,31 @@ function renderResponseHeaders(items){responseHeaders.innerHTML='';if(!items.len
 function extractSubrequests(html,base){const out=[],seen=new Set();if(!/html/i.test(lastContentType)||!html)return out;let doc;try{doc=new DOMParser().parseFromString(html,'text/html')}catch{return out}const defs=[['script[src]','script','src'],['link[href]','link','href'],['img[src]','image','src'],['iframe[src]','iframe','src'],['source[src]','media','src']];for(const [sel,type,attr] of defs){doc.querySelectorAll(sel).forEach(el=>{const raw=el.getAttribute(attr);if(!raw)return;try{const u=new URL(raw,base).href;if(/^https?:/i.test(u)&&!seen.has(u)){seen.add(u);out.push({type,url:u})}}catch{}})}return out.slice(0,150)}
 function renderNetwork(){networkList.innerHTML='';if(!lastSubrequests.length){networkList.innerHTML='<div class="network-empty">No subrequests found in the response body.</div>';return}for(const item of lastSubrequests){const row=document.createElement('div');row.className='network-item';row.innerHTML=`<div class="network-type">${esc(item.type)}</div><div class="network-url" title="${esc(item.url)}">${esc(item.url)}</div><button class="btn network-send">Open in HTTPer</button>`;row.querySelector('button').onclick=()=>{urlInput.value=item.url;hostCustom=false;syncHostFromUrl();window.scrollTo({top:0,behavior:'smooth'})};networkList.appendChild(row)}}
 function showBody(on){bodyContent.classList.toggle('hidden',!on);toggleBody.textContent=on?'Hide body':'Show body'}
-function showPreview(on){previewContent.classList.toggle('hidden',!on);togglePreview.textContent=on?'Hide preview':'Preview body';if(on){const base=lastPreviewBase?`<base href="${esc(lastPreviewBase)}">`:'';previewFrame.srcdoc=/<html[\s>]/i.test(lastBody)?lastBody.replace(/<head([^>]*)>/i,`<head$1>${base}`):`<!doctype html><html><head>${base}</head><body>${lastBody}</body></html>`}else previewFrame.srcdoc=''}
+function buildPreviewHtml(){
+  let html=lastBody||'';
+  if(!html)return '<!doctype html><html><body></body></html>';
+  html=html.replace(/<meta[^>]+http-equiv\s*=\s*["']?content-security-policy["']?[^>]*>/gi,'');
+  html=html.replace(/<base\b[^>]*>/gi,'');
+  const base=lastPreviewBase?`<base href="${String(lastPreviewBase).replace(/&/g,'&amp;').replace(/"/g,'&quot;')}">`:'';
+  if(/<head[\s>]/i.test(html))return html.replace(/<head([^>]*)>/i,`<head$1>${base}`);
+  if(/<html[\s>]/i.test(html))return html.replace(/<html([^>]*)>/i,`<html$1><head>${base}</head>`);
+  return `<!doctype html><html><head>${base}</head><body>${html}</body></html>`;
+}
+function clearPreviewUrl(){if(previewUrl){URL.revokeObjectURL(previewUrl);previewUrl=null}}
+function showPreview(on){
+  previewContent.classList.toggle('hidden',!on);
+  togglePreview.textContent=on?'Hide preview':'Preview body';
+  clearPreviewUrl();
+  if(on){
+    const blob=new Blob([buildPreviewHtml()],{type:'text/html'});
+    previewUrl=URL.createObjectURL(blob);
+    previewFrame.removeAttribute('srcdoc');
+    previewFrame.src=previewUrl;
+  }else{
+    previewFrame.removeAttribute('src');
+    previewFrame.src='about:blank';
+  }
+}
 function showNetwork(on){networkContent.classList.toggle('hidden',!on);toggleNetwork.textContent=on?'Hide Network':'Network View';if(on)renderNetwork()}
 
 clearHeaders();defaults.forEach(([n,v])=>addHeaderRow(n,v));
@@ -41,6 +65,7 @@ $('addHeaderBtn').onclick=()=>addHeaderRow();
 toggleBody.onclick=()=>showBody(bodyContent.classList.contains('hidden'));
 togglePreview.onclick=()=>showPreview(previewContent.classList.contains('hidden'));
 toggleNetwork.onclick=()=>showNetwork(networkContent.classList.contains('hidden'));
+window.addEventListener('beforeunload',clearPreviewUrl);
 
 sendBtn.onclick=async()=>{
   message.textContent='';responsePanel.classList.add('hidden');showBody(false);showPreview(false);showNetwork(false);
