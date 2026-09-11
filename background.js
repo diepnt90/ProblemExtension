@@ -58,9 +58,21 @@ function defaultPortForUrl(url) {
   return null;
 }
 
-async function rememberRemoteConnection(details) {
-  // Only keep requests initiated by this extension, so normal browser traffic does not pollute HTTPer results.
-  if (!details.initiator || details.initiator !== EXTENSION_ORIGIN) return;
+function normalizeUrl(url) {
+  try { return new URL(String(url || "")).href; } catch { return String(url || ""); }
+}
+
+function isLikelyExtensionRequest(details) {
+  // Extension fetches normally have our extension origin as initiator. For some redirect/manual-fetch
+  // paths Chromium may omit initiator, but those requests are still detached from a normal tab.
+  if (details.initiator === EXTENSION_ORIGIN) return true;
+  if (!details.initiator && details.tabId === -1) return true;
+  if (details.initiator === "null" && details.tabId === -1) return true;
+  return false;
+}
+
+async function rememberRemoteConnection(details, eventName) {
+  if (!isLikelyExtensionRequest(details)) return;
 
   const now = Date.now();
   const stored = await chrome.storage.session.get(REMOTE_CONNECTIONS_KEY);
@@ -70,19 +82,29 @@ async function rememberRemoteConnection(details) {
   fresh.push({
     requestId: details.requestId,
     method: String(details.method || "GET").toUpperCase(),
-    url: details.url,
+    url: normalizeUrl(details.url),
     ip: details.ip || "",
     port: defaultPortForUrl(details.url),
     fromCache: Boolean(details.fromCache),
-    statusCode: details.statusCode,
+    statusCode: Number(details.statusCode || 0),
+    statusLine: details.statusLine || "",
+    redirectUrl: details.redirectUrl || "",
+    eventName: eventName || "",
     at: now
   });
 
-  await chrome.storage.session.set({ [REMOTE_CONNECTIONS_KEY]: fresh.slice(-40) });
+  await chrome.storage.session.set({ [REMOTE_CONNECTIONS_KEY]: fresh.slice(-80) });
 }
 
 chrome.webRequest.onResponseStarted.addListener(
-  details => { rememberRemoteConnection(details); },
+  details => { rememberRemoteConnection(details, "responseStarted"); },
+  { urls: ["http://*/*", "https://*/*"] }
+);
+
+// For redirect:'manual', Fetch exposes an opaqueredirect response (status 0), but webRequest
+// still sees the actual 30x response. Capture it here as well as onResponseStarted.
+chrome.webRequest.onBeforeRedirect.addListener(
+  details => { rememberRemoteConnection(details, "beforeRedirect"); },
   { urls: ["http://*/*", "https://*/*"] }
 );
 
@@ -104,10 +126,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     chrome.storage.session.get(REMOTE_CONNECTIONS_KEY).then((data) => {
       const now = Date.now();
       const method = String(msg.method || "GET").toUpperCase();
-      const url = String(msg.url || "");
+      const url = normalizeUrl(msg.url);
       const items = Array.isArray(data[REMOTE_CONNECTIONS_KEY]) ? data[REMOTE_CONNECTIONS_KEY] : [];
       const match = items
-        .filter(item => item.url === url && item.method === method && now - Number(item.at || 0) <= REMOTE_CONNECTION_MAX_AGE_MS)
+        .filter(item => normalizeUrl(item.url) === url && item.method === method && now - Number(item.at || 0) <= REMOTE_CONNECTION_MAX_AGE_MS)
         .sort((a, b) => Number(b.at || 0) - Number(a.at || 0))[0] || null;
       sendResponse(match);
     });
