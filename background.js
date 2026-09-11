@@ -1,5 +1,6 @@
 // MV3 service worker.
 // Captures the Azure Portal Bearer token when the portal calls management.azure.com.
+// Also records the remote IP used by HTTPer extension fetches.
 //
 // Differences from MV2:
 //  - No more "webRequestBlocking" (MV3 forbids it) -> the listener runs in observe mode,
@@ -10,9 +11,12 @@
 
 const TOKEN_KEY = "azureAuthToken";
 const TOKEN_TS_KEY = "azureAuthTokenAt";
+const REMOTE_CONNECTIONS_KEY = "httperRemoteConnections";
 
 // AAD tokens usually live ~60-75 minutes. Past this mark treat it as expired and ask for a portal refresh.
 const TOKEN_MAX_AGE_MS = 50 * 60 * 1000;
+const REMOTE_CONNECTION_MAX_AGE_MS = 30 * 1000;
+const EXTENSION_ORIGIN = chrome.runtime.getURL("").replace(/\/$/, "");
 
 async function saveToken(value) {
   const stored = await chrome.storage.session.get(TOKEN_KEY);
@@ -44,21 +48,76 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
   ["requestHeaders"]
 );
 
-// popup.js asks for the token here instead of reading the badge like the MV2 build did.
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (!msg || msg.type !== "GET_TOKEN") return false;
+function defaultPortForUrl(url) {
+  try {
+    const u = new URL(url);
+    if (u.port) return Number(u.port);
+    if (u.protocol === "https:") return 443;
+    if (u.protocol === "http:") return 80;
+  } catch {}
+  return null;
+}
 
-  chrome.storage.session.get([TOKEN_KEY, TOKEN_TS_KEY]).then((data) => {
-    const token = data[TOKEN_KEY] || "";
-    const at = data[TOKEN_TS_KEY] || 0;
-    const expired = !at || Date.now() - at > TOKEN_MAX_AGE_MS;
-    sendResponse({ token, at, expired: Boolean(token) && expired });
+async function rememberRemoteConnection(details) {
+  // Only keep requests initiated by this extension, so normal browser traffic does not pollute HTTPer results.
+  if (!details.initiator || details.initiator !== EXTENSION_ORIGIN) return;
+
+  const now = Date.now();
+  const stored = await chrome.storage.session.get(REMOTE_CONNECTIONS_KEY);
+  const current = Array.isArray(stored[REMOTE_CONNECTIONS_KEY]) ? stored[REMOTE_CONNECTIONS_KEY] : [];
+  const fresh = current.filter(item => now - Number(item.at || 0) <= REMOTE_CONNECTION_MAX_AGE_MS);
+
+  fresh.push({
+    requestId: details.requestId,
+    method: String(details.method || "GET").toUpperCase(),
+    url: details.url,
+    ip: details.ip || "",
+    port: defaultPortForUrl(details.url),
+    fromCache: Boolean(details.fromCache),
+    statusCode: details.statusCode,
+    at: now
   });
 
-  return true; // keep the message channel open for the async sendResponse
+  await chrome.storage.session.set({ [REMOTE_CONNECTIONS_KEY]: fresh.slice(-40) });
+}
+
+chrome.webRequest.onResponseStarted.addListener(
+  details => { rememberRemoteConnection(details); },
+  { urls: ["http://*/*", "https://*/*"] }
+);
+
+// popup.js and HTTPer ask the service worker for session-only data here.
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (!msg) return false;
+
+  if (msg.type === "GET_TOKEN") {
+    chrome.storage.session.get([TOKEN_KEY, TOKEN_TS_KEY]).then((data) => {
+      const token = data[TOKEN_KEY] || "";
+      const at = data[TOKEN_TS_KEY] || 0;
+      const expired = !at || Date.now() - at > TOKEN_MAX_AGE_MS;
+      sendResponse({ token, at, expired: Boolean(token) && expired });
+    });
+    return true; // keep the message channel open for the async sendResponse
+  }
+
+  if (msg.type === "GET_REMOTE_INFO") {
+    chrome.storage.session.get(REMOTE_CONNECTIONS_KEY).then((data) => {
+      const now = Date.now();
+      const method = String(msg.method || "GET").toUpperCase();
+      const url = String(msg.url || "");
+      const items = Array.isArray(data[REMOTE_CONNECTIONS_KEY]) ? data[REMOTE_CONNECTIONS_KEY] : [];
+      const match = items
+        .filter(item => item.url === url && item.method === method && now - Number(item.at || 0) <= REMOTE_CONNECTION_MAX_AGE_MS)
+        .sort((a, b) => Number(b.at || 0) - Number(a.at || 0))[0] || null;
+      sendResponse(match);
+    });
+    return true;
+  }
+
+  return false;
 });
 
-// The token is gone after a browser restart (storage.session clears itself) -> clear the badge so it is not misleading.
+// Session data is gone after a browser restart -> clear the badge so it is not misleading.
 chrome.runtime.onStartup.addListener(() => {
   chrome.action.setBadgeText({ text: "" });
 });
