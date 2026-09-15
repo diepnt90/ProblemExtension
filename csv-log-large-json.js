@@ -81,6 +81,10 @@
     return af.every(f => compareValues(obj[f.field], f.op, f.value, f.field));
   }
 
+  function toTabularRecord(record) {
+    return largeKind === 'http' ? flattenHttpRecord(record) : record;
+  }
+
   async function refreshLargePreview() {
     if (!largeFile || largeKind === 'application') return;
     const generation = ++largeGeneration;
@@ -92,7 +96,7 @@
     progressBar.style.width = '0%';
     try {
       await scanJsonLines(largeFile, record => {
-        const obj = largeKind === 'http' ? flattenHttpRecord(record) : record;
+        const obj = toTabularRecord(record);
         if (!currentFilterPredicate(obj)) return true;
         found.push(headers.map(h => normalizeJsonValue(obj[h])));
         return found.length < limit;
@@ -138,7 +142,7 @@
     await scanJsonLines(file, record => {
       if (!largeKind) largeKind = detectKind(record);
       if (largeKind === 'application') return false;
-      const obj = largeKind === 'http' ? flattenHttpRecord(record) : record;
+      const obj = toTabularRecord(record);
       for (const k of Object.keys(obj)) headerSet.add(k);
       if (previewObjects.length < Math.max(100, Number(limitEl.value) || 100)) previewObjects.push(obj);
       seen++;
@@ -169,6 +173,22 @@
     progress.style.display = 'none';
     urlMsg.textContent = `Loaded: ${file.name} · lazy streaming`;
   }
+
+  window.largeLogStreamingApi = {
+    isActive() { return !!largeFile && largeKind !== 'application'; },
+    getKind() { return largeKind; },
+    getFileName() { return largeFile?.name || ''; },
+    getFileSize() { return largeFile?.size || 0; },
+    cancel() { largeGeneration++; },
+    async scan(onObject, opts = {}) {
+      if (!largeFile || largeKind === 'application') throw new Error('No active large tabular log.');
+      const generation = ++largeGeneration;
+      return scanJsonLines(largeFile, record => onObject(toTabularRecord(record)), {
+        generation,
+        progress: opts.progress
+      });
+    }
+  };
 
   render = function () {
     if (!largeFile || largeKind === 'application') return originalRender();
