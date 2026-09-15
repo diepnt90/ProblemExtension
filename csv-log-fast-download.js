@@ -48,45 +48,84 @@
     return { text, response, parallel: false };
   }
 
-  async function probeRange(url) {
-    const controller = new AbortController();
+  function parseContentRange(value) {
+    const match = String(value || '').match(/^bytes\s+(\d+)\s*-\s*(\d+)\s*\/\s*(\d+|\*)$/i);
+    if (!match) return null;
+    return {
+      start: Number(match[1]),
+      end: Number(match[2]),
+      total: match[3] === '*' ? 0 : Number(match[3])
+    };
+  }
+
+  async function getHeadInfo(url) {
     try {
-      const response = await fetch(url, {
-        cache: 'no-store',
-        headers: { Range: 'bytes=0-0' },
-        signal: controller.signal
-      });
-
-      if (response.status !== 206) {
-        controller.abort();
-        return null;
-      }
-
-      const contentRange = response.headers.get('content-range') || '';
-      const match = contentRange.match(/^bytes\s+0-0\/(\d+)$/i);
-      const encoding = (response.headers.get('content-encoding') || '').toLowerCase();
-      if (!match || (encoding && encoding !== 'identity')) {
-        controller.abort();
-        return null;
-      }
-
-      const total = Number(match[1]);
-      if (!Number.isFinite(total) || total <= 1) {
-        controller.abort();
-        return null;
-      }
-
-      await response.arrayBuffer();
+      const response = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+      if (!response.ok) return null;
+      const total = Number(response.headers.get('content-length') || 0);
       return {
-        total,
+        total: Number.isFinite(total) && total > 0 ? total : 0,
         contentType: response.headers.get('content-type') || '',
         disposition: response.headers.get('content-disposition') || '',
-        finalUrl: response.url || url
+        finalUrl: response.url || url,
+        encoding: (response.headers.get('content-encoding') || '').toLowerCase()
       };
-    } catch (e) {
-      if (e && e.name === 'AbortError') return null;
+    } catch {
       return null;
     }
+  }
+
+  async function fetchRange(url, start, end, rangeHeader) {
+    return fetch(url, {
+      cache: 'no-store',
+      headers: { [rangeHeader]: `bytes=${start}-${end}` }
+    });
+  }
+
+  async function tryRangeProbe(url, rangeHeader, headInfo) {
+    let response;
+    try {
+      response = await fetchRange(url, 0, 0, rangeHeader);
+    } catch {
+      return null;
+    }
+
+    if (response.status !== 206) return null;
+
+    const encoding = (response.headers.get('content-encoding') || headInfo?.encoding || '').toLowerCase();
+    if (encoding && encoding !== 'identity') return null;
+
+    const contentRange = parseContentRange(response.headers.get('content-range'));
+    const body = new Uint8Array(await response.arrayBuffer());
+    if (body.byteLength !== 1) return null;
+
+    const total = contentRange?.total || headInfo?.total || 0;
+    if (!Number.isFinite(total) || total <= 1) return null;
+
+    return {
+      total,
+      rangeHeader,
+      contentType: response.headers.get('content-type') || headInfo?.contentType || '',
+      disposition: response.headers.get('content-disposition') || headInfo?.disposition || '',
+      finalUrl: response.url || headInfo?.finalUrl || url
+    };
+  }
+
+  async function probeRange(url) {
+    const headInfo = await getHeadInfo(url);
+
+    // Normal HTTP byte ranges first. Azure Blob supports this in most cases.
+    const standard = await tryRangeProbe(url, 'Range', headInfo);
+    if (standard) return standard;
+
+    // Azure Blob also supports x-ms-range. This avoids false negatives on
+    // endpoints/proxies where the normal Range header is handled differently.
+    if (/\.blob\.core\.windows\.net$/i.test(new URL(url).hostname)) {
+      const azure = await tryRangeProbe(url, 'x-ms-range', headInfo);
+      if (azure) return azure;
+    }
+
+    return null;
   }
 
   async function downloadParallel(url, probe) {
@@ -102,25 +141,26 @@
       const end = Math.min(total - 1, start + partSize - 1);
       if (start > end) return new Uint8Array(0);
 
-      const response = await fetch(url, {
-        cache: 'no-store',
-        headers: { Range: `bytes=${start}-${end}` }
-      });
-
+      const response = await fetchRange(url, start, end, probe.rangeHeader);
       if (response.status !== 206) {
-        throw new Error(`Server stopped supporting HTTP Range (part ${index + 1}/${workers}, HTTP ${response.status})`);
+        throw new Error(`Range request failed (part ${index + 1}/${workers}, HTTP ${response.status})`);
       }
 
-      const contentRange = response.headers.get('content-range') || '';
-      const expected = `bytes ${start}-${end}/${total}`.toLowerCase();
-      if (contentRange.toLowerCase() !== expected) {
+      const contentRange = parseContentRange(response.headers.get('content-range'));
+      if (contentRange && (contentRange.start !== start || contentRange.end !== end || (contentRange.total && contentRange.total !== total))) {
         throw new Error(`Unexpected Content-Range for part ${index + 1}/${workers}`);
       }
 
-      return readBytesWithProgress(response, delta => {
+      const expectedSize = end - start + 1;
+      const bytes = await readBytesWithProgress(response, delta => {
         received += delta;
         updateDownloadProgress(received, total, `${workers}-part`);
       });
+
+      if (bytes.byteLength !== expectedSize) {
+        throw new Error(`Part ${index + 1}/${workers} size mismatch (${bytes.byteLength} / ${expectedSize} bytes)`);
+      }
+      return bytes;
     });
 
     const parts = await Promise.all(tasks);
@@ -149,13 +189,18 @@
           }
         }
       },
-      parallel: true
+      parallel: true,
+      rangeHeader: probe.rangeHeader
     };
   }
 
   async function smartDownload(url) {
     const probe = await probeRange(url);
-    if (!probe || probe.total < MIN_PARALLEL_SIZE) return downloadSingle(url);
+    if (!probe) {
+      urlMsg.textContent = 'Multi-part byte range was not available. Using a single connection...';
+      return downloadSingle(url);
+    }
+    if (probe.total < MIN_PARALLEL_SIZE) return downloadSingle(url);
 
     try {
       return await downloadParallel(url, probe);
@@ -194,7 +239,8 @@
       const name = dispositionName || (new URL(source).pathname.split('/').pop() || 'download');
 
       loadSourceText(result.text, name, response.headers.get('content-type') || '');
-      urlMsg.textContent = `Loaded: ${name}${result.parallel ? ' · 8-part download' : ''}`;
+      const rangeMode = result.parallel ? ` · 8-part download (${result.rangeHeader})` : '';
+      urlMsg.textContent = `Loaded: ${name}${rangeMode}`;
       progressBar.style.width = '100%';
     } catch (e) {
       urlMsg.textContent = 'Could not download this URL: ' + e.message;
