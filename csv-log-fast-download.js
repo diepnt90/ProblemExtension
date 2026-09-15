@@ -1,6 +1,16 @@
 (() => {
   const PARALLEL_DOWNLOADS = 8;
   const MIN_PARALLEL_SIZE = 2 * 1024 * 1024;
+  const cancelDownloadBtn = document.getElementById('cancelDownload');
+  let activeDownloadController = null;
+
+  function isAbortError(error) {
+    return error && (error.name === 'AbortError' || /aborted|abort/i.test(String(error.message || '')));
+  }
+
+  function setDownloading(active) {
+    if (cancelDownloadBtn) cancelDownloadBtn.style.display = active ? 'inline-block' : 'none';
+  }
 
   function updateDownloadProgress(received, total, mode = '8-part') {
     progress.style.display = 'block';
@@ -41,10 +51,37 @@
     return out;
   }
 
-  async function downloadSingle(url) {
-    const response = await fetch(url, { cache: 'no-store' });
+  async function responseTextWithProgressCancelable(response) {
+    if (!response.body || !response.body.getReader) return response.text();
+    const total = Number(response.headers.get('content-length') || 0);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const parts = [];
+    let received = 0;
+    progress.style.display = 'block';
+    progressBar.style.width = '0%';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      parts.push(decoder.decode(value, { stream: true }));
+      if (total > 0) {
+        const pct = Math.min(100, received / total * 100);
+        progressBar.style.width = pct.toFixed(1) + '%';
+        urlMsg.textContent = `Browser is downloading... ${pct.toFixed(0)}% · ${formatBytes(received)} / ${formatBytes(total)}`;
+      } else {
+        progressBar.style.width = '100%';
+        urlMsg.textContent = `Browser is downloading... ${formatBytes(received)}`;
+      }
+    }
+    parts.push(decoder.decode());
+    return parts.join('');
+  }
+
+  async function downloadSingle(url, signal) {
+    const response = await fetch(url, { cache: 'no-store', signal });
     if (!response.ok) throw new Error('HTTP ' + response.status);
-    const text = await responseTextWithProgress(response);
+    const text = await responseTextWithProgressCancelable(response);
     return { text, response, parallel: false };
   }
 
@@ -58,9 +95,9 @@
     };
   }
 
-  async function getHeadInfo(url) {
+  async function getHeadInfo(url, signal) {
     try {
-      const response = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+      const response = await fetch(url, { method: 'HEAD', cache: 'no-store', signal });
       if (!response.ok) return null;
       const total = Number(response.headers.get('content-length') || 0);
       return {
@@ -70,23 +107,26 @@
         finalUrl: response.url || url,
         encoding: (response.headers.get('content-encoding') || '').toLowerCase()
       };
-    } catch {
+    } catch (e) {
+      if (isAbortError(e)) throw e;
       return null;
     }
   }
 
-  async function fetchRange(url, start, end, rangeHeader) {
+  async function fetchRange(url, start, end, rangeHeader, signal) {
     return fetch(url, {
       cache: 'no-store',
-      headers: { [rangeHeader]: `bytes=${start}-${end}` }
+      headers: { [rangeHeader]: `bytes=${start}-${end}` },
+      signal
     });
   }
 
-  async function tryRangeProbe(url, rangeHeader, headInfo) {
+  async function tryRangeProbe(url, rangeHeader, headInfo, signal) {
     let response;
     try {
-      response = await fetchRange(url, 0, 0, rangeHeader);
-    } catch {
+      response = await fetchRange(url, 0, 0, rangeHeader, signal);
+    } catch (e) {
+      if (isAbortError(e)) throw e;
       return null;
     }
 
@@ -111,24 +151,20 @@
     };
   }
 
-  async function probeRange(url) {
-    const headInfo = await getHeadInfo(url);
-
-    // Normal HTTP byte ranges first. Azure Blob supports this in most cases.
-    const standard = await tryRangeProbe(url, 'Range', headInfo);
+  async function probeRange(url, signal) {
+    const headInfo = await getHeadInfo(url, signal);
+    const standard = await tryRangeProbe(url, 'Range', headInfo, signal);
     if (standard) return standard;
 
-    // Azure Blob also supports x-ms-range. This avoids false negatives on
-    // endpoints/proxies where the normal Range header is handled differently.
     if (/\.blob\.core\.windows\.net$/i.test(new URL(url).hostname)) {
-      const azure = await tryRangeProbe(url, 'x-ms-range', headInfo);
+      const azure = await tryRangeProbe(url, 'x-ms-range', headInfo, signal);
       if (azure) return azure;
     }
 
     return null;
   }
 
-  async function downloadParallel(url, probe) {
+  async function downloadParallel(url, probe, signal) {
     const total = probe.total;
     const workers = Math.min(PARALLEL_DOWNLOADS, total);
     const partSize = Math.ceil(total / workers);
@@ -141,7 +177,7 @@
       const end = Math.min(total - 1, start + partSize - 1);
       if (start > end) return new Uint8Array(0);
 
-      const response = await fetchRange(url, start, end, probe.rangeHeader);
+      const response = await fetchRange(url, start, end, probe.rangeHeader, signal);
       if (response.status !== 206) {
         throw new Error(`Range request failed (part ${index + 1}/${workers}, HTTP ${response.status})`);
       }
@@ -194,21 +230,31 @@
     };
   }
 
-  async function smartDownload(url) {
-    const probe = await probeRange(url);
+  async function smartDownload(url, signal) {
+    const probe = await probeRange(url, signal);
     if (!probe) {
       urlMsg.textContent = 'Multi-part byte range was not available. Using a single connection...';
-      return downloadSingle(url);
+      return downloadSingle(url, signal);
     }
-    if (probe.total < MIN_PARALLEL_SIZE) return downloadSingle(url);
+    if (probe.total < MIN_PARALLEL_SIZE) return downloadSingle(url, signal);
 
     try {
-      return await downloadParallel(url, probe);
+      return await downloadParallel(url, probe, signal);
     } catch (e) {
+      if (isAbortError(e)) throw e;
       urlMsg.textContent = `8-part download unavailable (${e.message}). Falling back to single connection...`;
       progressBar.style.width = '0%';
-      return downloadSingle(url);
+      return downloadSingle(url, signal);
     }
+  }
+
+  if (cancelDownloadBtn) {
+    cancelDownloadBtn.onclick = () => {
+      if (!activeDownloadController) return;
+      cancelDownloadBtn.disabled = true;
+      urlMsg.textContent = 'Canceling download...';
+      activeDownloadController.abort();
+    };
   }
 
   loadUrlBtn.onclick = async () => {
@@ -223,14 +269,22 @@
       return alert('Invalid URL: ' + e.message);
     }
 
+    if (activeDownloadController) activeDownloadController.abort();
+    activeDownloadController = new AbortController();
+    const controller = activeDownloadController;
+
     loadUrlBtn.disabled = true;
     loadUrlBtn.textContent = 'Loading...';
+    if (cancelDownloadBtn) cancelDownloadBtn.disabled = false;
+    setDownloading(true);
     urlMsg.textContent = 'Checking whether the server supports 8-part download...';
     progress.style.display = 'block';
     progressBar.style.width = '0%';
 
     try {
-      const result = await smartDownload(parsed.href);
+      const result = await smartDownload(parsed.href, controller.signal);
+      if (controller.signal.aborted) throw new DOMException('Download canceled', 'AbortError');
+
       const response = result.response;
       const disposition = response.headers.get('content-disposition') || '';
       const match = disposition.match(/filename\*?=(?:UTF-8''|["']?)([^"';]+)/i);
@@ -243,9 +297,18 @@
       urlMsg.textContent = `Loaded: ${name}${rangeMode}`;
       progressBar.style.width = '100%';
     } catch (e) {
-      urlMsg.textContent = 'Could not download this URL: ' + e.message;
-      progress.style.display = 'none';
+      if (isAbortError(e) || controller.signal.aborted) {
+        urlMsg.textContent = 'Download canceled.';
+        progressBar.style.width = '0%';
+        progress.style.display = 'none';
+      } else {
+        urlMsg.textContent = 'Could not download this URL: ' + e.message;
+        progress.style.display = 'none';
+      }
     } finally {
+      if (activeDownloadController === controller) activeDownloadController = null;
+      setDownloading(false);
+      if (cancelDownloadBtn) cancelDownloadBtn.disabled = false;
       loadUrlBtn.disabled = false;
       loadUrlBtn.textContent = 'Load URL';
     }
