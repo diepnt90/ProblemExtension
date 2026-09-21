@@ -51,12 +51,11 @@
     return out;
   }
 
-  async function responseTextWithProgressCancelable(response) {
-    if (!response.body || !response.body.getReader) return response.text();
+  async function responseBlobWithProgressCancelable(response) {
+    if (!response.body || !response.body.getReader) return response.blob();
     const total = Number(response.headers.get('content-length') || 0);
     const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    const parts = [];
+    const chunks = [];
     let received = 0;
     progress.style.display = 'block';
     progressBar.style.width = '0%';
@@ -64,25 +63,17 @@
       const { done, value } = await reader.read();
       if (done) break;
       received += value.byteLength;
-      parts.push(decoder.decode(value, { stream: true }));
-      if (total > 0) {
-        const pct = Math.min(100, received / total * 100);
-        progressBar.style.width = pct.toFixed(1) + '%';
-        urlMsg.textContent = `Browser is downloading... ${pct.toFixed(0)}% · ${formatBytes(received)} / ${formatBytes(total)}`;
-      } else {
-        progressBar.style.width = '100%';
-        urlMsg.textContent = `Browser is downloading... ${formatBytes(received)}`;
-      }
+      chunks.push(value);
+      updateDownloadProgress(received, total, 'single');
     }
-    parts.push(decoder.decode());
-    return parts.join('');
+    return new Blob(chunks, { type: response.headers.get('content-type') || '' });
   }
 
   async function downloadSingle(url, signal) {
     const response = await fetch(url, { cache: 'no-store', signal });
     if (!response.ok) throw new Error('HTTP ' + response.status);
-    const text = await responseTextWithProgressCancelable(response);
-    return { text, response, parallel: false };
+    const blob = await responseBlobWithProgressCancelable(response);
+    return { blob, response, parallel: false };
   }
 
   function parseContentRange(value) {
@@ -208,19 +199,14 @@
     });
 
     const parts = await Promise.all(tasks);
-    const bytes = new Uint8Array(total);
-    let offset = 0;
-    for (const part of parts) {
-      bytes.set(part, offset);
-      offset += part.byteLength;
+    const downloaded = parts.reduce((sum, part) => sum + part.byteLength, 0);
+    if (downloaded !== total) {
+      throw new Error(`Downloaded size mismatch (${downloaded} / ${total} bytes)`);
     }
 
-    if (offset !== total) {
-      throw new Error(`Downloaded size mismatch (${offset} / ${total} bytes)`);
-    }
-
+    const blob = new Blob(parts, { type: probe.contentType || 'application/octet-stream' });
     return {
-      text: new TextDecoder().decode(bytes),
+      blob,
       response: {
         url: probe.finalUrl,
         headers: {
@@ -238,37 +224,11 @@
     };
   }
 
-  function downloadedTextHasJsonRecords(text) {
-    let s = String(text ?? '');
-    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
-    s = s.trimStart();
-    if (!s) return false;
-
-    try {
-      const v = JSON.parse(s);
-      if (Array.isArray(v)) return v.some(x => x && typeof x === 'object' && !Array.isArray(x));
-      if (v && typeof v === 'object') return true;
-    } catch {}
-
-    let pos = 0, checked = 0;
-    while (pos < s.length && checked < 200) {
-      let end = s.indexOf('\n', pos);
-      if (end < 0) end = s.length;
-      const line = s.slice(pos, end).replace(/\r$/, '').trim();
-      pos = end + 1;
-      if (!line) continue;
-      checked++;
-      try {
-        const v = JSON.parse(line);
-        if (v && typeof v === 'object' && !Array.isArray(v)) return true;
-      } catch {}
-    }
-    return false;
+  async function blobLooksLikeJson(blob) {
+    const sample = await blob.slice(0, 256 * 1024).text();
+    return typeof contentLooksLikeJson === 'function' ? contentLooksLikeJson(sample) : /^[\s\uFEFF]*[\[{]/.test(sample);
   }
 
-  function downloadDebugPrefix(text) {
-    return JSON.stringify(String(text ?? '').slice(0, 160));
-  }
   async function smartDownload(url, signal) {
     const probe = await probeRange(url, signal);
     if (!probe) {
@@ -280,19 +240,12 @@
     try {
       const result = await downloadParallel(url, probe, signal);
 
-      // Cheap integrity check before handing a large JSON download to the parser.
-      // Corrupt/mis-ranged downloads often decode to data that does not even begin
-      // like JSON. In that case retry once with a normal single connection.
       const type = (result.response.headers.get('content-type') || '').toLowerCase();
       const path = (() => { try { return new URL(result.response.url || url).pathname; } catch { return ''; } })();
       const jsonExpected = /json|ndjson/.test(type) || /\.(json|jsonl|ndjson)$/i.test(path);
-      if (jsonExpected) {
-        const head = result.text.slice(0, 262144).replace(/^\uFEFF/, '').trimStart();
-        if (head && head[0] !== '{' && head[0] !== '[') {
-          throw new Error('Downloaded byte ranges do not look like JSON');
-        }
+      if (jsonExpected && !(await blobLooksLikeJson(result.blob))) {
+        throw new Error('Downloaded byte ranges do not look like JSON');
       }
-
       return result;
     } catch (e) {
       if (isAbortError(e)) throw e;
@@ -336,15 +289,8 @@
     progressBar.style.width = '0%';
 
     try {
-      let result = await smartDownload(parsed.href, controller.signal);
+      const result = await smartDownload(parsed.href, controller.signal);
       if (controller.signal.aborted) throw new DOMException('Download canceled', 'AbortError');
-
-      if (!downloadedTextHasJsonRecords(result.text)) {
-        urlMsg.textContent = 'Downloaded content is not parseable JSON. Retrying with a single connection...';
-        progressBar.style.width = '0%';
-        result = await downloadSingle(parsed.href, controller.signal);
-        if (controller.signal.aborted) throw new DOMException('Download canceled', 'AbortError');
-      }
 
       const response = result.response;
       const disposition = response.headers.get('content-disposition') || '';
@@ -355,19 +301,12 @@
 
       const contentType = response.headers.get('content-type') || '';
       let handledAsLargeJson = false;
-      if (typeof window.loadDownloadedLargeJson === 'function') {
-        handledAsLargeJson = await window.loadDownloadedLargeJson(result.text, name, contentType);
+      if (typeof window.loadDownloadedLargeBlob === 'function') {
+        handledAsLargeJson = await window.loadDownloadedLargeBlob(result.blob, name, contentType);
       }
       if (!handledAsLargeJson) {
-        if (!downloadedTextHasJsonRecords(result.text) &&
-            (/json|ndjson/i.test(contentType) || /\.(json|jsonl|ndjson)$/i.test(name))) {
-          throw new Error(
-            `Downloaded response contains no parseable JSON records. ` +
-            `Content-Type=${contentType || '(none)'}, name=${name || '(none)'}, ` +
-            `size=${String(result.text ?? '').length} chars, prefix=${downloadDebugPrefix(result.text)}`
-          );
-        }
-        loadSourceText(result.text, name, contentType);
+        const text = await result.blob.text();
+        loadSourceText(text, name, contentType);
       }
       const rangeMode = result.parallel ? ` · 8-part download (${result.rangeHeader})` : '';
       if (!handledAsLargeJson) urlMsg.textContent = `Loaded: ${name}${rangeMode}`;
