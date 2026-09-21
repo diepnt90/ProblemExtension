@@ -18,7 +18,34 @@ function isHttpLog(records){return records.some(r=>r.properties!==undefined||r.E
 function loadHttpLog(records,errors,name,invalidCount=errors.length){const converted=new Array(records.length),headerSet=new Set(['time','EventTime','category','Host','EventIpAddress']);for(let i=0;i<records.length;i++){const record=records[i],row={time:record.time??'',EventTime:record.EventTime??'',category:record.category??'',Host:record.Host??'',EventIpAddress:record.EventIpAddress??''},props=record.properties;if(props!==undefined&&props!==null&&props!==''){if(typeof props==='string'){try{const parsedProps=JSON.parse(props);if(parsedProps&&typeof parsedProps==='object'&&!Array.isArray(parsedProps))Object.assign(row,parsedProps);else row.properties=props}catch{row.properties=props}}else if(typeof props==='object'&&!Array.isArray(props))Object.assign(row,props);else row.properties=props}for(const k of Object.keys(row))headerSet.add(k);converted[i]=row;records[i]=null}headers=[...headerSet].sort();rows=converted.map(r=>headers.map(h=>normalizeJsonValue(r[h])));visibleColumns=headers.map((_,i)=>i);const csvName=(name||'data.json').replace(/\.(jsonl?|ndjson)$/i,'')+'.csv';showData(csvName,name,`<span>HTTP JSON converted${invalidCount?` · ${invalidCount} invalid line${invalidCount===1?'':'s'} skipped`:''}</span>`)}
 function loadConsoleLog(records,errors,name){mode='console';consoleRecords=records.map(r=>({time:r.time??'',containerId:r.containerId??'',Host:r.Host??'',resultDescription:r.resultDescription??''}));headers=[];rows=[];visibleColumns=[];filters=[];filtersEl.innerHTML='';sourceFileName=name||'data.json';rowsControl.style.display='flex';showAllBtn.style.display='inline-block';setupFilterUi('Application log filters','Filter application logs by time, containerId, Host or resultDescription. Matching a log entry also shows its continuation/stack-trace lines until the next fail/info/warn/error/debug/trace entry. Multiple filters are combined with AND.');exportCsvBtn.style.display='none';columnPicker.style.display='none';filterPanel.style.display='block';resultPanel.style.display='block';statsEl.innerHTML=`<span class="badge">${esc(name)}</span><span>${consoleRecords.length.toLocaleString()} application log records</span>${errors.length?`<span>${errors.length} invalid line${errors.length===1?'':'s'} skipped</span>`:''}`;addFilter();render()}
 function loadJsonText(text,name){let records=[],errors=[],invalidCount=0;if(looksLikeJsonLines(text,name)){const p=parseJsonLines(text);records=p.records;errors=p.errors;invalidCount=p.invalidCount}else{try{const parsed=JSON.parse(text);if(Array.isArray(parsed))records=parsed.filter(v=>v&&typeof v==='object'&&!Array.isArray(v));else if(parsed&&typeof parsed==='object')records=[parsed]}catch{const p=parseJsonLines(text);records=p.records;errors=p.errors;invalidCount=p.invalidCount}}if(!records.length){alert(`No JSON records found.${invalidCount?` ${invalidCount.toLocaleString()} line(s) could not be parsed.`:''}`);return}if(isApplicationLog(records)){loadConsoleLog(records,errors,name);return}if(isHttpLog(records)){loadHttpLog(records,errors,name,invalidCount);return}const headerSet=new Set();for(const r of records)for(const k of Object.keys(r))headerSet.add(k);headers=[...headerSet];rows=records.map(r=>headers.map(h=>normalizeJsonValue(r[h])));visibleColumns=headers.map((_,i)=>i);showData((name||'data.json').replace(/\.json$/i,'.csv'),name)}
-function loadSourceText(text,name,type=''){if(/json|ndjson/i.test(type)||/\.(json|jsonl|ndjson)$/i.test(name))loadJsonText(text,name);else loadCsvText(text,name)}
+function contentLooksLikeJson(text){
+  let s=String(text??'');
+  if(s.charCodeAt(0)===0xFEFF)s=s.slice(1);
+  s=s.trimStart();
+  if(!s)return false;
+  if(s[0]==='[')return true;
+  if(s[0]!=='{')return false;
+
+  // A normal JSON object or JSONL/NDJSON both start with "{". For JSONL,
+  // validating the first non-empty line is enough to route to the JSON parser.
+  const nl=s.indexOf('\n');
+  const first=(nl>=0?s.slice(0,nl):s).replace(/\r$/,'').trim();
+  try{
+    const v=JSON.parse(first);
+    return !!v&&typeof v==='object'&&!Array.isArray(v);
+  }catch{
+    // It may be one pretty-printed JSON object rather than JSONL.
+    try{
+      const v=JSON.parse(s);
+      return !!v&&typeof v==='object';
+    }catch{return false}
+  }
+}
+function loadSourceText(text,name,type=''){
+  const jsonByMetadata=/json|ndjson/i.test(type)||/\.(json|jsonl|ndjson)$/i.test(name);
+  if(jsonByMetadata||contentLooksLikeJson(text))loadJsonText(text,name);
+  else loadCsvText(text,name)
+}
 function addFilter(){const row=document.createElement('div');row.className='filter-row';const fields=mode==='console'?APP_HEADERS:headers;row.innerHTML=`<select class="select field">${fields.map(h=>`<option value="${esc(h)}">${esc(h)}</option>`).join('')}</select><select class="select op"><option value="includes">includes</option><option value="=">=</option><option value=">">&gt;</option><option value="<">&lt;</option></select><input class="input value" placeholder="Filter value"><button class="btn btn-danger remove">Remove</button>`;row.querySelector('.remove').onclick=()=>{row.remove();render()};row.querySelectorAll('select,input').forEach(el=>el.oninput=render);filtersEl.appendChild(row)}
 function compareValues(a,op,b,field=''){a=String(a??'');b=String(b??'');if(op==='includes')return a.toLowerCase().includes(b.toLowerCase());if(field==='time'){const at=Date.parse(a),bt=Date.parse(b);if(!Number.isNaN(at)&&!Number.isNaN(bt)){if(op==='=')return at===bt;if(op==='>')return at>bt;if(op==='<')return at<bt}}const an=Number(a),bn=Number(b),numeric=!Number.isNaN(an)&&!Number.isNaN(bn)&&b.trim()!=='';const x=numeric?an:a.toLowerCase(),y=numeric?bn:b.toLowerCase();if(op==='=')return x==y;if(op==='>')return x>y;if(op==='<')return x<y;return true}
 function activeFilters(){return [...filtersEl.querySelectorAll('.filter-row')].map(r=>({field:r.querySelector('.field').value,op:r.querySelector('.op').value,value:r.querySelector('.value').value})).filter(f=>f.value!=='')}
