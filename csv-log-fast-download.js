@@ -238,6 +238,37 @@
     };
   }
 
+  function downloadedTextHasJsonRecords(text) {
+    let s = String(text ?? '');
+    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
+    s = s.trimStart();
+    if (!s) return false;
+
+    try {
+      const v = JSON.parse(s);
+      if (Array.isArray(v)) return v.some(x => x && typeof x === 'object' && !Array.isArray(x));
+      if (v && typeof v === 'object') return true;
+    } catch {}
+
+    let pos = 0, checked = 0;
+    while (pos < s.length && checked < 200) {
+      let end = s.indexOf('\n', pos);
+      if (end < 0) end = s.length;
+      const line = s.slice(pos, end).replace(/\r$/, '').trim();
+      pos = end + 1;
+      if (!line) continue;
+      checked++;
+      try {
+        const v = JSON.parse(line);
+        if (v && typeof v === 'object' && !Array.isArray(v)) return true;
+      } catch {}
+    }
+    return false;
+  }
+
+  function downloadDebugPrefix(text) {
+    return JSON.stringify(String(text ?? '').slice(0, 160));
+  }
   async function smartDownload(url, signal) {
     const probe = await probeRange(url, signal);
     if (!probe) {
@@ -305,8 +336,15 @@
     progressBar.style.width = '0%';
 
     try {
-      const result = await smartDownload(parsed.href, controller.signal);
+      let result = await smartDownload(parsed.href, controller.signal);
       if (controller.signal.aborted) throw new DOMException('Download canceled', 'AbortError');
+
+      if (!downloadedTextHasJsonRecords(result.text)) {
+        urlMsg.textContent = 'Downloaded content is not parseable JSON. Retrying with a single connection...';
+        progressBar.style.width = '0%';
+        result = await downloadSingle(parsed.href, controller.signal);
+        if (controller.signal.aborted) throw new DOMException('Download canceled', 'AbortError');
+      }
 
       const response = result.response;
       const disposition = response.headers.get('content-disposition') || '';
@@ -321,6 +359,14 @@
         handledAsLargeJson = await window.loadDownloadedLargeJson(result.text, name, contentType);
       }
       if (!handledAsLargeJson) {
+        if (!downloadedTextHasJsonRecords(result.text) &&
+            (/json|ndjson/i.test(contentType) || /\.(json|jsonl|ndjson)$/i.test(name))) {
+          throw new Error(
+            `Downloaded response contains no parseable JSON records. ` +
+            `Content-Type=${contentType || '(none)'}, name=${name || '(none)'}, ` +
+            `size=${String(result.text ?? '').length} chars, prefix=${downloadDebugPrefix(result.text)}`
+          );
+        }
         loadSourceText(result.text, name, contentType);
       }
       const rangeMode = result.parallel ? ` · 8-part download (${result.rangeHeader})` : '';
