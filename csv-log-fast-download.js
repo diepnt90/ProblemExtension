@@ -182,9 +182,17 @@
         throw new Error(`Range request failed (part ${index + 1}/${workers}, HTTP ${response.status})`);
       }
 
+      const encoding = (response.headers.get('content-encoding') || '').toLowerCase();
+      if (encoding && encoding !== 'identity') {
+        throw new Error(`Range part ${index + 1}/${workers} was content-encoded (${encoding})`);
+      }
+
       const contentRange = parseContentRange(response.headers.get('content-range'));
-      if (contentRange && (contentRange.start !== start || contentRange.end !== end || (contentRange.total && contentRange.total !== total))) {
-        throw new Error(`Unexpected Content-Range for part ${index + 1}/${workers}`);
+      if (!contentRange) {
+        throw new Error(`Missing Content-Range for part ${index + 1}/${workers}`);
+      }
+      if (contentRange.start !== start || contentRange.end !== end || (contentRange.total && contentRange.total !== total)) {
+        throw new Error(`Unexpected Content-Range for part ${index + 1}/${workers}: expected bytes ${start}-${end}/${total}`);
       }
 
       const expectedSize = end - start + 1;
@@ -239,7 +247,22 @@
     if (probe.total < MIN_PARALLEL_SIZE) return downloadSingle(url, signal);
 
     try {
-      return await downloadParallel(url, probe, signal);
+      const result = await downloadParallel(url, probe, signal);
+
+      // Cheap integrity check before handing a large JSON download to the parser.
+      // Corrupt/mis-ranged downloads often decode to data that does not even begin
+      // like JSON. In that case retry once with a normal single connection.
+      const type = (result.response.headers.get('content-type') || '').toLowerCase();
+      const path = (() => { try { return new URL(result.response.url || url).pathname; } catch { return ''; } })();
+      const jsonExpected = /json|ndjson/.test(type) || /\.(json|jsonl|ndjson)$/i.test(path);
+      if (jsonExpected) {
+        const head = result.text.slice(0, 262144).replace(/^\uFEFF/, '').trimStart();
+        if (head && head[0] !== '{' && head[0] !== '[') {
+          throw new Error('Downloaded byte ranges do not look like JSON');
+        }
+      }
+
+      return result;
     } catch (e) {
       if (isAbortError(e)) throw e;
       urlMsg.textContent = `8-part download unavailable (${e.message}). Falling back to single connection...`;
