@@ -291,20 +291,20 @@
     }
   };
 
-  window.loadDownloadedLargeJson = async function(text, name, type = '') {
-    // Do not trust URL filename/Content-Type alone. Many log endpoints return
-    // application/octet-stream or a generic "download" filename.
-    const jsonLike = /json|ndjson/i.test(type) ||
-      /\.(json|jsonl|ndjson)$/i.test(name || '') ||
-      (typeof contentLooksLikeJson === 'function' && contentLooksLikeJson(text));
-    if (!jsonLike) return false;
-
-    const blob = new Blob([text], { type: type || 'application/x-ndjson' });
+  window.loadDownloadedLargeBlob = async function(blob, name, type = '') {
+    if (!(blob instanceof Blob)) return false;
     if (blob.size < LARGE_JSON_THRESHOLD) return false;
 
-    const file = new File([blob], name || 'download.json', { type: type || 'application/x-ndjson' });
-    const sample = await file.slice(0, 256 * 1024).text();
-    if (!looksLikeJsonLines(sample, file.name)) return false;
+    const fileName = name || 'download.json';
+    const sample = await blob.slice(0, 256 * 1024).text();
+    const jsonLike = /json|ndjson/i.test(type) ||
+      /\.(json|jsonl|ndjson)$/i.test(fileName) ||
+      (typeof contentLooksLikeJson === 'function' && contentLooksLikeJson(sample));
+    if (!jsonLike) return false;
+
+    const file = new File([blob], fileName, { type: type || blob.type || 'application/x-ndjson' });
+    if (!looksLikeJsonLines(sample, file.name) &&
+        !(typeof contentLooksLikeJson === 'function' && contentLooksLikeJson(sample))) return false;
 
     await initLargeJson(file);
     return true;
