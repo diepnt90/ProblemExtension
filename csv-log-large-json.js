@@ -85,8 +85,70 @@
     return largeKind === 'http' ? flattenHttpRecord(record) : record;
   }
 
+  async function refreshLargeApplicationPreview() {
+    if (!largeFile || largeKind !== 'application') return;
+    const generation = ++largeGeneration;
+    const limit = Math.max(1, Math.min(Number(limitEl.value) || 100, 10000));
+    const af = activeFilters();
+    const found = [];
+    let block = [];
+
+    const blockMatches = records => !af.length || records.some(record =>
+      af.every(f => compareValues(record[f.field], f.op, f.value, f.field))
+    );
+
+    const flushBlock = () => {
+      if (!block.length) return true;
+      if (blockMatches(block)) {
+        for (const record of block) found.push(record);
+      }
+      block = [];
+      return found.length < limit;
+    };
+
+    largeBusy = true;
+    resultInfo.innerHTML = '<span>Scanning large application log…</span>';
+    progress.style.display = 'block';
+    progressBar.style.width = '0%';
+
+    try {
+      await scanJsonLines(largeFile, record => {
+        const normalized = {
+          time: record.time ?? '',
+          containerId: record.containerId ?? '',
+          Host: record.Host ?? '',
+          resultDescription: record.resultDescription ?? ''
+        };
+
+        if (isApplicationLogEntryStart(normalized) && block.length) {
+          if (!flushBlock()) return false;
+        }
+        block.push(normalized);
+        return true;
+      }, {
+        generation,
+        progress(received, total) {
+          const pct = total ? Math.min(100, received / total * 100) : 0;
+          progressBar.style.width = pct.toFixed(1) + '%';
+          urlMsg.textContent = `Scanning large application log… ${pct.toFixed(0)}% · ${formatBytes(received)} / ${formatBytes(total)}`;
+        }
+      });
+
+      if (generation !== largeGeneration) return;
+      flushBlock();
+      consoleRecords = found;
+      originalRender();
+      resultInfo.innerHTML = `<span>${found.length.toLocaleString()} matching records (including continuation lines)</span><span>Large-file streaming mode · stops after ${limit.toLocaleString()} records</span>`;
+      urlMsg.textContent = `Loaded: ${largeFile.name} · application-log streaming`;
+      progress.style.display = 'none';
+    } finally {
+      if (generation === largeGeneration) largeBusy = false;
+    }
+  }
+
   async function refreshLargePreview() {
-    if (!largeFile || largeKind === 'application') return;
+    if (!largeFile) return;
+    if (largeKind === 'application') return refreshLargeApplicationPreview();
     const generation = ++largeGeneration;
     const limit = Math.max(1, Math.min(Number(limitEl.value) || 100, 10000));
     const found = [];
@@ -120,7 +182,7 @@
   }
 
   function scheduleLargeRefresh() {
-    if (!largeFile || largeKind === 'application') return;
+    if (!largeFile) return;
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(refreshLargePreview, 180);
   }
@@ -157,9 +219,27 @@
 
     if (!largeKind) throw new Error('No JSON records found.');
     if (largeKind === 'application') {
-      largeFile = null;
-      largeKind = null;
-      return originalFileChange.call(fileEl);
+      mode = 'console';
+      consoleRecords = [];
+      headers = [];
+      rows = [];
+      visibleColumns = [];
+      filters = [];
+      filtersEl.innerHTML = '';
+      sourceFileName = file.name || 'data.json';
+      rowsControl.style.display = 'flex';
+      showAllBtn.style.display = 'inline-block';
+      setupFilterUi('Application log filters','Filter application logs by time, containerId, Host or resultDescription. A match on either the parent entry or a continuation/stack-trace line returns the complete block. Multiple filters are combined with AND.');
+      exportCsvBtn.style.display = 'none';
+      columnPicker.style.display = 'none';
+      filterPanel.style.display = 'block';
+      resultPanel.style.display = 'block';
+      statsEl.innerHTML = `<span class="badge">${esc(file.name)}</span><span>Large application log · streaming mode</span>`;
+      addFilter();
+      progress.style.display = 'none';
+      urlMsg.textContent = `Loaded: ${file.name} · application-log streaming`;
+      await refreshLargeApplicationPreview();
+      return;
     }
 
     headers = [...headerSet];
@@ -191,7 +271,7 @@
   };
 
   render = function () {
-    if (!largeFile || largeKind === 'application') return originalRender();
+    if (!largeFile) return originalRender();
     scheduleLargeRefresh();
   };
 
@@ -209,6 +289,21 @@
       progress.style.display = 'none';
       urlMsg.textContent = 'Could not parse this large JSON file: ' + e.message;
     }
+  };
+
+  window.loadDownloadedLargeJson = async function(text, name, type = '') {
+    const jsonLike = /json|ndjson/i.test(type) || /\.(json|jsonl|ndjson)$/i.test(name || '');
+    if (!jsonLike) return false;
+
+    const blob = new Blob([text], { type: type || 'application/x-ndjson' });
+    if (blob.size < LARGE_JSON_THRESHOLD) return false;
+
+    const file = new File([blob], name || 'download.json', { type: type || 'application/x-ndjson' });
+    const sample = await file.slice(0, 256 * 1024).text();
+    if (!looksLikeJsonLines(sample, file.name)) return false;
+
+    await initLargeJson(file);
+    return true;
   };
 
   limitEl.addEventListener('input', scheduleLargeRefresh);
