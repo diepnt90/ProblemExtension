@@ -292,9 +292,16 @@
       const source = response.url || parsed.href;
       const name = dispositionName || (new URL(source).pathname.split('/').pop() || 'download');
 
-      loadSourceText(result.text, name, response.headers.get('content-type') || '');
+      const contentType = response.headers.get('content-type') || '';
+      let handledAsLargeJson = false;
+      if (typeof window.loadDownloadedLargeJson === 'function') {
+        handledAsLargeJson = await window.loadDownloadedLargeJson(result.text, name, contentType);
+      }
+      if (!handledAsLargeJson) {
+        loadSourceText(result.text, name, contentType);
+      }
       const rangeMode = result.parallel ? ` · 8-part download (${result.rangeHeader})` : '';
-      urlMsg.textContent = `Loaded: ${name}${rangeMode}`;
+      if (!handledAsLargeJson) urlMsg.textContent = `Loaded: ${name}${rangeMode}`;
       progressBar.style.width = '100%';
     } catch (e) {
       if (isAbortError(e) || controller.signal.aborted) {
