@@ -32,8 +32,15 @@ function filterApplicationLogBlocks(af){
     if(isApplicationLogEntryStart(consoleRecords[i])){
       while(end<consoleRecords.length&&!isApplicationLogEntryStart(consoleRecords[end]))end++;
     }
-    const header=consoleRecords[start];
-    const matches=af.every(f=>compareValues(header[f.field],f.op,f.value,f.field));
+    // Treat the parent log entry and all continuation/stack-trace lines as one block.
+    // A block matches when any record in that block satisfies all active filters.
+    // This lets resultDescription filters match text that exists only on a child line
+    // while still returning the complete parent + child block.
+    let matches=false;
+    for(let j=start;j<end&&!matches;j++){
+      const record=consoleRecords[j];
+      matches=af.every(f=>compareValues(record[f.field],f.op,f.value,f.field));
+    }
     if(matches)for(let j=start;j<end;j++)out.push(consoleRecords[j]);
     i=end;
   }
