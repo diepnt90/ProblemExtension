@@ -292,7 +292,11 @@
   };
 
   window.loadDownloadedLargeJson = async function(text, name, type = '') {
-    const jsonLike = /json|ndjson/i.test(type) || /\.(json|jsonl|ndjson)$/i.test(name || '');
+    // Do not trust URL filename/Content-Type alone. Many log endpoints return
+    // application/octet-stream or a generic "download" filename.
+    const jsonLike = /json|ndjson/i.test(type) ||
+      /\.(json|jsonl|ndjson)$/i.test(name || '') ||
+      (typeof contentLooksLikeJson === 'function' && contentLooksLikeJson(text));
     if (!jsonLike) return false;
 
     const blob = new Blob([text], { type: type || 'application/x-ndjson' });
